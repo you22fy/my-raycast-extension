@@ -6,8 +6,9 @@ import {
   getPreferenceValues,
   showToast,
   Toast,
+  LaunchProps,
 } from "@raycast/api";
-import { useState, useEffect } from "react";
+import { usePromise } from "@raycast/utils";
 import { GoogleGenAI } from "@google/genai";
 
 interface Preferences {
@@ -21,40 +22,29 @@ interface TranslationResult {
   targetLanguage: string;
 }
 
-export default function Command() {
-  const [isLoading, setIsLoading] = useState(true);
-  const [result, setResult] = useState<TranslationResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+type TranslationLaunchContext = {
+  selectedText?: string;
+  nonce?: number;
+};
 
-  useEffect(() => {
-    translateSelectedText();
-  }, []);
+async function translateText(selectedTextOverride?: string | null, _nonce?: number | null): Promise<TranslationResult> {
+  const selectedText =
+    typeof selectedTextOverride === "string" ? selectedTextOverride : await getSelectedText();
 
-  async function translateSelectedText() {
-    setIsLoading(true);
-    setError(null);
+  if (!selectedText || selectedText.trim() === "") {
+    throw new Error("テキストが選択されていません。テキストを選択してから再度お試しください。");
+  }
 
-    try {
-      const selectedText = await getSelectedText();
+  const preferences = getPreferenceValues<Preferences>();
+  const apiKey = preferences.geminiApiKey;
 
-      if (!selectedText || selectedText.trim() === "") {
-        setError("テキストが選択されていません。テキストを選択してから再度お試しください。");
-        setIsLoading(false);
-        return;
-      }
+  if (!apiKey) {
+    throw new Error("Gemini APIキーが設定されていません。拡張機能の設定からAPIキーを入力してください。");
+  }
 
-      const preferences = getPreferenceValues<Preferences>();
-      const apiKey = preferences.geminiApiKey;
+  const ai = new GoogleGenAI({ apiKey });
 
-      if (!apiKey) {
-        setError("Gemini APIキーが設定されていません。拡張機能の設定からAPIキーを入力してください。");
-        setIsLoading(false);
-        return;
-      }
-
-      const ai = new GoogleGenAI({ apiKey });
-
-      const prompt = `You are a professional translator. Analyze the following text and translate it:
+  const prompt = `You are a professional translator. Analyze the following text and translate it:
 
 1. If the text is in Japanese, translate it to English.
 2. If the text is in any other language, translate it to Japanese.
@@ -67,50 +57,43 @@ Important instructions:
 Text to translate:
 ${selectedText}`;
 
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-lite",
-        contents: prompt,
-      });
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash-lite",
+    contents: prompt,
+  });
 
-      const translatedText = response.text || "";
+  const translatedText = response.text || "";
+  const isJapanese = /[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/.test(selectedText);
 
-      const isJapanese = /[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/.test(selectedText);
+  await showToast({
+    style: Toast.Style.Success,
+    title: "翻訳完了",
+  });
 
-      setResult({
-        originalText: selectedText,
-        translatedText: translatedText.trim(),
-        sourceLanguage: isJapanese ? "日本語" : "Other",
-        targetLanguage: isJapanese ? "English" : "日本語",
-      });
+  return {
+    originalText: selectedText,
+    translatedText: translatedText.trim(),
+    sourceLanguage: isJapanese ? "日本語" : "Other",
+    targetLanguage: isJapanese ? "English" : "日本語",
+  };
+}
 
-      await showToast({
-        style: Toast.Style.Success,
-        title: "翻訳完了",
-      });
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "不明なエラーが発生しました";
-
-      if (errorMessage.includes("no text selected") || errorMessage.includes("frontmost application")) {
-        setError("選択テキストを取得できませんでした。他のアプリでテキストを選択してから再度お試しください。");
-      } else if (errorMessage.includes("API key") || errorMessage.includes("401") || errorMessage.includes("403")) {
-        setError("APIキーが無効です。設定でGemini APIキーを確認してください。");
-      } else {
-        setError(`翻訳に失敗しました: ${errorMessage}`);
-      }
-
-      await showToast({
-        style: Toast.Style.Failure,
-        title: "翻訳失敗",
-        message: errorMessage,
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
+export default function Command(props: LaunchProps<{ launchContext?: TranslationLaunchContext }>) {
+  const launchContext = props.launchContext;
+  const { isLoading, data: result, error, revalidate } = usePromise(translateText, [
+    launchContext?.selectedText ?? null,
+    launchContext?.nonce ?? null,
+  ]);
   function generateMarkdown(): string {
     if (error) {
-      return `# エラー\n\n${error}`;
+      const errorMessage = error.message;
+      if (errorMessage.includes("no text selected") || errorMessage.includes("frontmost application")) {
+        return "# エラー\n\n選択テキストを取得できませんでした。他のアプリでテキストを選択してから再度お試しください。";
+      }
+      if (errorMessage.includes("API key") || errorMessage.includes("401") || errorMessage.includes("403")) {
+        return "# エラー\n\nAPIキーが無効です。設定でGemini APIキーを確認してください。";
+      }
+      return `# エラー\n\n${errorMessage}`;
     }
 
     if (!result) {
@@ -152,7 +135,7 @@ ${result.originalText}
             />
             <Action
               title="再翻訳"
-              onAction={translateSelectedText}
+              onAction={() => revalidate()}
               shortcut={{ modifiers: ["cmd"], key: "r" }}
             />
           </ActionPanel>
@@ -160,7 +143,7 @@ ${result.originalText}
           <ActionPanel>
             <Action
               title="再試行"
-              onAction={translateSelectedText}
+              onAction={() => revalidate()}
               shortcut={{ modifiers: ["cmd"], key: "r" }}
             />
           </ActionPanel>

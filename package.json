@@ -16,6 +16,12 @@
       "title": "Translate Selected Text",
       "description": "選択テキストを日英自動翻訳",
       "mode": "view"
+    },
+    {
+      "name": "translate-selected-text",
+      "title": "Translate Selected Text (Hotkey)",
+      "description": "選択テキストを日英自動翻訳（ホットキー用）",
+      "mode": "no-view"
     }
   ],
   "preferences": [
